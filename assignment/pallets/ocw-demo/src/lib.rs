@@ -96,30 +96,27 @@ impl<T: SigningTypes> SignedPayload<T> for Payload<T::Public> {
     }
 }
 
-// ref: https://serde.rs/container-attrs.html#crate
-#[derive(Deserialize, Encode, Decode, Default)]
-struct GithubInfo {
-    // Specify our own deserializing function to convert JSON string to vector of bytes
-    #[serde(deserialize_with = "de_string_to_bytes")]
-    login: Vec<u8>,
-    #[serde(deserialize_with = "de_string_to_bytes")]
-    blog: Vec<u8>,
-    public_repos: u32,
+#[derive(Deserialize, Encode, Decode, Default, Clone)]
+pub struct DotPrice {
+    pub data: DotData,
+    pub timestamp: u64,
 }
 
-#[derive(Deserialize, Encode, Decode, Default)]
-struct DotPrice {
-    data: DotData,
-    timestamp: u64,
+impl sp_std::cmp::PartialEq for DotPrice {
+    fn eq(&self, other: &DotPrice) -> bool {
+        self.timestamp == other.timestamp
+    }
 }
 
-#[derive(Deserialize, Encode, Decode, Default)]
-struct DotData {
+impl sp_std::cmp::Eq for DotPrice {}
+
+#[derive(Deserialize, Encode, Decode, Default, Clone)]
+pub struct DotData {
     #[serde(
         deserialize_with = "de_price_string_to_bytes",
         rename(deserialize = "priceUsd")
     )]
-    price_usd: Vec<u8>,
+    pub price_usd: Vec<u8>,
 }
 
 pub fn de_price_string_to_bytes<'de, D>(de: D) -> Result<Vec<u8>, D::Error>
@@ -141,20 +138,6 @@ where
 {
     let s: &str = Deserialize::deserialize(de)?;
     Ok(s.as_bytes().to_vec())
-}
-
-impl fmt::Debug for GithubInfo {
-    // `fmt` converts the vector of bytes inside the struct back to string for
-    //   more friendly display.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{{ login: {}, blog: {}, public_repos: {} }}",
-            str::from_utf8(&self.login).map_err(|_| fmt::Error)?,
-            str::from_utf8(&self.blog).map_err(|_| fmt::Error)?,
-            &self.public_repos
-        )
-    }
 }
 
 impl fmt::Debug for DotPrice {
@@ -184,7 +167,7 @@ decl_storage! {
         /// A vector of recently submitted numbers. Bounded by NUM_VEC_LEN
         Numbers get(fn numbers): VecDeque<u32>;
         /// A vector of recently submitted USD Prices. Bounded by NUM_VEC_LEN
-        UsdPrices get(fn usdprices): VecDeque<Vec<u8>>;
+        UsdPrices get(fn usdprices): VecDeque<DotPrice>;
     }
 }
 
@@ -196,7 +179,7 @@ decl_event!(
     {
         /// Event generated when a new number is accepted to contribute to the average.
         NewNumber(Option<AccountId>, u32),
-        NewPrice(Option<AccountId>, Vec<u8>),
+        NewPrice(Option<AccountId>, DotPrice),
     }
 );
 
@@ -227,9 +210,9 @@ decl_module! {
         // Use unsigned transaction, because I don't want to know who ( account Id )
         // sends this.
         #[weight = 10000]
-        pub fn submit_price_unsigned(origin, price: Vec<u8>) -> DispatchResult {
+        pub fn submit_price_unsigned(origin, price: DotPrice) -> DispatchResult {
             let _ = ensure_none(origin)?;
-            // debug::info!("submit_number_unsigned: {}", number);
+            debug::info!("submit_price_unsigned: {:?}", price);
             Self::append_or_replace_price(price.clone());
 
             Self::deposit_event(RawEvent::NewPrice(None, price));
@@ -248,7 +231,7 @@ decl_module! {
 }
 
 impl<T: Trait> Module<T> {
-    fn append_or_replace_price(price: Vec<u8>) {
+    fn append_or_replace_price(price: DotPrice) {
         UsdPrices::mutate(|prices| {
             if prices.len() == NUM_VEC_LEN {
                 let _ = prices.pop_front();
@@ -276,7 +259,7 @@ impl<T: Trait> Module<T> {
             match Self::fetch_n_parse_dot_usd_price() {
                 Ok(dot_price) => {
                     s_info.set(&dot_price);
-                    return Self::offchain_unsigned_tx_price(dot_price.data.price_usd);
+                    return Self::offchain_unsigned_tx_price(dot_price);
                 }
                 Err(err) => return Err(err),
             }
@@ -340,7 +323,7 @@ impl<T: Trait> Module<T> {
         // Next we fully read the response body and collect it to a vector of bytes.
         Ok(response.body().collect::<Vec<u8>>())
     }
-    fn offchain_unsigned_tx_price(price: Vec<u8>) -> Result<(), Error<T>> {
+    fn offchain_unsigned_tx_price(price: DotPrice) -> Result<(), Error<T>> {
         let call = Call::submit_price_unsigned(price);
 
         // `submit_unsigned_transaction` returns a type of `Result<(), ()>`
